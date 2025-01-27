@@ -157,7 +157,7 @@ __device__ void computeInputAllMap(
         arg_min = 2;
     }
 	// Use arg_min to gather global normal vector from rotation matrix
-	glm::vec3 global_normal{
+	glm::vec3 _global_normal{
 		R[0][arg_min],
 		R[1][arg_min],
 		R[2][arg_min],
@@ -174,17 +174,26 @@ __device__ void computeInputAllMap(
 	};
 	// If normal is point to the opposite deirection to the camera (dot product return negative)
 	// rotate it 180 degree by multiply by -1
-	neg_mask = sign(glm::dot(global_normal, gaussian_to_cam_global));
-	global_normal = neg_mask * global_normal;
+	float neg_mask = sign(glm::dot(_global_normal, gaussian_to_cam_global));
+	_global_normal = neg_mask * _global_normal;
+
+	float3 global_normal;
+	global_normal.x =	_global_normal.x;
+	global_normal.y =	_global_normal.y;
+	global_normal.z =	_global_normal.z;
 
 	// create local_normal by matmal with camera->world
 	float3 local_normal = transform3x3(global_normal, viewmatrix);
 
 	// calculate local_distance
-	float3 pts_in_cam = transformPoint4x3(mean3D, viewmatrix);
+	float3 _mean3d;
+	_mean3d.x = mean3D.x;
+	_mean3d.y = mean3D.y;
+	_mean3d.z = mean3D.z;
+	float3 pts_in_cam = transformPoint4x3(_mean3d, viewmatrix);
 	// dot(local_normal, pts_in_cam)
 	float local_distance = local_normal.x*pts_in_cam.x + local_normal.y*pts_in_cam.y + local_normal.z*pts_in_cam.z;
-	if (local_distance < 0.0f) local_distance = -1*local_distance
+	if (local_distance < 0.0f) local_distance = -1*local_distance;
 	input_all_map[0] = local_normal.x;
 	input_all_map[1] = local_normal.y;
 	input_all_map[2] = local_normal.z;
@@ -280,7 +289,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 		orig_points[3 * idx + 1],
 		orig_points[3 * idx + 2]
 	};
-	computeInputAllMap(mean3D, scales[idx], R, viewmatrix, input_all_map + idx * 5, cached_neg_masks + idx)
+	computeInputAllMap(mean3D, scales[idx], R, viewmatrix, input_all_map + idx * 5, cached_neg_masks + idx);
 	// Compute 2D screen-space covariance matrix
 	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix);
 

@@ -34,7 +34,7 @@ std::function<char*(size_t N)> resizeFunctional(torch::Tensor& t) {
 
 // NUM_CHANNELS, NUM_ALL_MAP, BLOCK_X, BLOCK_Y are defined in config.h
 
-std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,

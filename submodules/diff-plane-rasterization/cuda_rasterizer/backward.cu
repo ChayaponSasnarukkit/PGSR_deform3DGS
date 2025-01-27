@@ -343,8 +343,8 @@ __device__ void computeCov3D(int idx, const glm::vec3 scale, float mod, const gl
 __device__ void computeInputAllMap(
 	int idx,
 	const float* viewmatrix,
-	const float3* mean,
-	const float3* scale,
+	const float3* means,
+	const glm::vec3 scale,
 	const glm::vec4 rot,
 	const float* input_all_maps,
 	const float* neg_masks,
@@ -357,7 +357,7 @@ __device__ void computeInputAllMap(
 		input_all_maps[5*idx + 1],
 		input_all_maps[5*idx + 2],
 	};
-	float3 pts_in_cam = transformPoint4x3(mean3D, viewmatrix);
+	float3 pts_in_cam = transformPoint4x3(means[idx], viewmatrix);
 	// local_distance = | local_normal @ pts_in_cam |
 	// given local_normal @ pts_in_cam = D, 
 	// dlocal_distance_dD = sign(D) using piecewise constant approach
@@ -401,7 +401,6 @@ __device__ void computeInputAllMap(
 
 	dL_dmeans[idx] += dL_dmean_this_path;
 
-	
 	// select rotation axis
 	float min_val = scale.x;
     int arg_min = 0;
@@ -550,6 +549,7 @@ __global__ void preprocessCUDA(
 	const glm::vec3* scales,
 	const glm::vec4* rotations,
 	const float scale_modifier,
+	const float* viewmatrix,
 	const float* proj,
 	const glm::vec3* campos,
 	const float* input_all_maps,
@@ -560,7 +560,7 @@ __global__ void preprocessCUDA(
 	float* dL_dcov3D,
 	float* dL_dsh,
 	glm::vec3* dL_dscale,
-	glm::vec4* dL_drot,
+	glm::vec4* dL_drots,
 	const float* dL_dall_map)
 {
 	auto idx = cg::this_grid().thread_rank();
@@ -592,11 +592,11 @@ __global__ void preprocessCUDA(
 
 	// Compute gradient updates due to computing covariance from scale/rotation
 	if (scales)
-		computeCov3D(idx, scales[idx], scale_modifier, rotations[idx], dL_dcov3D, dL_dscale, dL_drot);
+		computeCov3D(idx, scales[idx], scale_modifier, rotations[idx], dL_dcov3D, dL_dscale, dL_drots);
 	
 	if (input_all_maps)
 		// mean, 
-		computeInputAllMap(idx,viewmatrix,means[idx],scales[idx],rotations[idx],input_all_maps,neg_masks,dL_dall_map,dL_dmeans,dL_drots)
+		computeInputAllMap(idx,viewmatrix,means,scales[idx],rotations[idx],input_all_maps,cached_neg_masks,dL_dall_map,dL_dmeans,dL_drots);
 
 }
 
@@ -635,7 +635,7 @@ renderCUDA(
 	const uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
 	const uint32_t pix_id = W * pix.y + pix.x;
 	const float2 pixf = { (float)pix.x, (float)pix.y };
-	const float2 ray = { (pixf.x - W * 0.5) / fx, (pixf.y - H * 0.5) / fy };
+	const float2 ray = { (pixf.x - W * 0.5f) / fx, (pixf.y - H * 0.5f) / fy };
 
 	const bool inside = pix.x < W&& pix.y < H;
 	const uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
@@ -876,6 +876,7 @@ void BACKWARD::preprocess(
 		(glm::vec3*)scales,
 		(glm::vec4*)rotations,
 		scale_modifier,
+		viewmatrix,
 		projmatrix,
 		campos,
 		input_all_maps,

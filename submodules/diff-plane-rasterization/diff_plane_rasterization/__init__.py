@@ -240,7 +240,6 @@ class GaussianRasterizer(nn.Module):
             scales, 
             rotations,
             cov3D_precomp,
-            all_map,
             raster_settings, 
         )
 
