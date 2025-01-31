@@ -53,6 +53,84 @@ class ViewpointDataset(Dataset):
         # Return the viewpoint at this index
         return self.viewpoint_stack[index]
 
+def average_subframe_render(viewpoint_cam, gaussians, pipe, background, return_plane=True, return_depth_normal=True, exposure_time=1, num_subframe=11):
+    # assume camera is fixed for now
+    key_frame_time = viewpoint_cam.time 
+    # start i = 0, end i = exposure_time, have num_subframe step
+    sub_time_steps = [viewpoint_cam.time - exposure_time/2 + i*num_subframe for i in range(0, exposure_time/11)]
+    images = []
+    depths = []
+    radii_list = []
+    visibility_filter_list = []
+    normals = []
+    depth_normals = []
+    viewspace_point_tensor_list = []
+    scales_final = []
+    viewspace_points_abs_list = []
+    for sub_time in sub_time_steps:
+        # render: 
+        #   (1) extract time_step find deformation using self._deformation to get deformation of that time step t
+        #   (2) add 3DGuassians with its deformation (new object)
+        #   (3) call CUDA kernel for rasterization via submodules/depth-diff-gaussian-rasterization
+        #       rendered_image, radii, depth = rasterizer(...)
+        render_pkg = render(viewpoint_cam, sub_time, gaussians, pipe, background,
+                        return_plane, return_depth_normal)
+        image, viewspace_point_tensor, visibility_filter, radii = \
+            render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+
+        # print('\nsum and mean of color image on python', render_pkg["render"].sum(), render_pkg["render"].mean())
+        # print('\nsum and mean of render_pkg["radii"] on python', render_pkg["radii"].sum(), render_pkg["radii"].mean())
+        # print('\nsum and mean of render_pkg["plane_depth"] on python', render_pkg["plane_depth"].sum(), render_pkg["plane_depth"].mean())
+        
+        images.append(image.unsqueeze(0))
+        depths.append(render_pkg["plane_depth"].unsqueeze(0))
+        radii_list.append(radii.unsqueeze(0))
+        visibility_filter_list.append(visibility_filter.unsqueeze(0))
+        normals.append(render_pkg["rendered_normal"].unsqueeze(0))
+        depth_normals.append(render_pkg["depth_normal"].unsqueeze(0))
+        scales_final.append(render_pkg["scales_final"])
+        # seem like it not being used at all <= 2Dmeans projection with thier gradient
+        viewspace_point_tensor_list.append(viewspace_point_tensor)
+        viewspace_points_abs_list.append(render_pkg["viewspace_points_abs"])
+    
+    # TODO: aggregate images, depth, radii, viewspace_point_tensor_list(_xy_grad) in the same manner as ref paper
+     # Turn each list into a single stacked tensor of shape (num_subframe, H, W, C).
+    stacked_images = torch.cat(images, dim=0)           # (num_subframe, H, W, C)
+    avg_image = stacked_images.mean(dim=0)             # (H, W, C)
+
+    stacked_depths = torch.cat(depths, dim=0)           # (num_subframe, H, W, 1)
+    avg_depth = stacked_depths.mean(dim=0)             # (H, W, 1)
+
+    stacked_radii = torch.cat(radii_list, dim=0)   # shape: (num_subframe, H, W, 1)
+    max_radii = stacked_radii.max(dim=0)[0]        # shape: (H, W, 1)
+
+
+    # stacked_visibility = torch.cat(visibility_filter_list, dim=0)
+    # # e.g., you might "max" across subframes or average:
+    # avg_visibility = stacked_visibility.mean(dim=0)     # or .max(dim=0)[0]
+
+    # stacked_normals = torch.cat(normals, dim=0)         # (num_subframe, H, W, 3)
+    # avg_normals = stacked_normals.mean(dim=0)
+
+    # stacked_dnormals = torch.cat(depth_normals, dim=0)  # (num_subframe, H, W, 3)
+    # avg_dnormals = stacked_dnormals.mean(dim=0)
+
+    # 5) Package up the aggregated result as a dict.
+    out = {
+        "render": avg_image,                # (H, W, C) motion-blurred color
+        "plane_depth": avg_depth,           # (H, W, 1) average depth
+        "radii": max_radii,                 # (H, W, 1) average radii
+        "visibility_filter": visibility_filter_list,
+        "rendered_normal": normals,         # (subframe, H, W, 3) => geometric regularize must do per subframe
+        "depth_normal": depth_normals,      # (subframe, H, W, 3) => geometric regularize must do per subframe
+        "scales_final": scales_final,       # (subframe, ...) => geometric regularize must do per subframe
+        "viewspace_points": viewspace_point_tensor_list, # collection of grad pointer => have value iff loss.backward got called
+        "viewspace_points_abs": viewspace_points_abs_list
+    }
+
+    return out
+
+    
 def get_depth_grad_weight(depth_map, beta=2.0):
     """
     Compute a gradient-based weight map for a single-channel depth map.
@@ -201,7 +279,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             #   (2) add 3DGuassians with its deformation (new object)
             #   (3) call CUDA kernel for rasterization via submodules/depth-diff-gaussian-rasterization
             #       rendered_image, radii, depth = rasterizer(...)
-            render_pkg = render(viewpoint_cam, gaussians, pipe, background,
+            render_pkg = average_subframe_render(viewpoint_cam, gaussians, pipe, background,
                             return_plane=True, return_depth_normal=True)
             image, viewspace_point_tensor, visibility_filter, radii = \
                 render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
@@ -220,12 +298,13 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             gt_depths.append(gt_depth.unsqueeze(0))
             masks.append(mask.unsqueeze(0))
             radii_list.append(radii.unsqueeze(0))
-            visibility_filter_list.append(visibility_filter.unsqueeze(0))
-            normals.append(render_pkg["rendered_normal"].unsqueeze(0))
-            depth_normals.append(render_pkg["depth_normal"].unsqueeze(0))
-            scales_final = render_pkg["scales_final"]
+            visibility_filter_list = visibility_filter
+            viewspace_points_abs_list = render_pkg["viewspace_points_abs"]
+            normals = (render_pkg["rendered_normal"]) # list
+            depth_normals = (render_pkg["depth_normal"]) # list
+            scales_finals = render_pkg["scales_final"] # list
             # seem like it not being used at all <= 2Dmeans projection with thier gradient
-            viewspace_point_tensor_list.append(viewspace_point_tensor)
+            viewspace_point_tensor_list = (viewspace_point_tensor) # list
         
         # written like it can be multiple scene trained it one iteration, but actually was one ...
         radii = torch.cat(radii_list,0).max(dim=0).values
@@ -257,14 +336,15 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
 
         # # scale loss
         scaling_loss = 0
-        if visibility_filter.sum() > 0:
-            # TODO: change get_scaling to deform_scaling
-            # deform = exp(self._scale + sum(basis*weight)) >= 0
-            scale = scales_final[visibility_filter]
-            sorted_scale, _ = torch.sort(scale, dim=-1)
-            min_scale_loss = sorted_scale[...,0]
-            # print(min_scale_loss)
-            scaling_loss = opt.scale_loss_weight * min_scale_loss.mean()
+        for scales_final in scales_finals:
+            if visibility_filter.sum() > 0:
+                # TODO: change get_scaling to deform_scaling
+                # deform = exp(self._scale + sum(basis*weight)) >= 0
+                scale = scales_final[visibility_filter]
+                sorted_scale, _ = torch.sort(scale, dim=-1)
+                min_scale_loss = sorted_scale[...,0]
+                # print(min_scale_loss)
+                scaling_loss += opt.scale_loss_weight * min_scale_loss.mean()
         # single-view loss
         normal_loss = 0
         if iteration > opt.single_view_weight_from_iter:
@@ -279,16 +359,17 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             # weighted normal difference
             # edge_aware_weight = depth_weight ** 2
             edge_aware_weight = (0.5 * depth_weight + 0.5 * color_weight) ** 2
+            for el_depth_normal, el_normal in zip(depth_normal, normal):
                 
-            if not opt.wo_image_weight:
-                normal_loss = 1.5 * weight * (
-                    edge_aware_weight * ((depth_normal - normal).abs().sum(dim=0))
-                ).mean()
-                # normal_loss = weight * (
-                #     edge_aware_weight * ((depth_normal - normal).abs().sum(dim=0))
-                # ).mean()
-            else:
-                normal_loss = weight * ((depth_normal - normal).abs().sum(dim=0)).mean()
+                if not opt.wo_image_weight:
+                    normal_loss += weight * (
+                        edge_aware_weight * ((el_depth_normal - el_normal).abs().sum(dim=0))
+                    ).mean()
+                    # normal_loss = weight * (
+                    #     edge_aware_weight * ((depth_normal - normal).abs().sum(dim=0))
+                    # ).mean()
+                else:
+                    normal_loss += weight * ((el_depth_normal - el_normal).abs().sum(dim=0)).mean()
 
         # # single-view loss
         # normal_loss = 0
@@ -335,8 +416,10 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
 
         # seem like it tery to copy the grad out for further use?
         viewspace_point_tensor_grad = torch.zeros_like(viewspace_point_tensor)
+        viewspace_point_tensor_abs_grad = torch.zeros_like(viewspace_point_tensor)
         for idx in range(0, len(viewspace_point_tensor_list)):
             viewspace_point_tensor_grad = viewspace_point_tensor_grad + viewspace_point_tensor_list[idx].grad
+            viewspace_point_tensor_abs_grad = viewspace_point_tensor_abs_grad + viewspace_points_abs_list[idx].grad
         iter_end.record()
 
         with torch.no_grad():
@@ -366,8 +449,8 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                 # this occur EVERY ITERATION , it catch the max radii2D for prunning
                 mask = (render_pkg["out_observe"] > 0) & visibility_filter
                 gaussians.max_radii2D[mask] = torch.max(gaussians.max_radii2D[mask], radii[mask])
-                viewspace_point_tensor_abs = render_pkg["viewspace_points_abs"]
-                gaussians.add_densification_stats(render_pkg["viewspace_points"], viewspace_point_tensor_abs, visibility_filter)
+                # viewspace_point_tensor_abs = render_pkg["viewspace_points_abs"]
+                gaussians.add_densification_stats(viewspace_point_tensor_grad, viewspace_point_tensor_abs_grad, visibility_filter)
                 # gaussians.add_densification_stats(viewspace_point_tensor_grad, visibility_filter)
 
                 # calculate thds for opacity prunning and densification

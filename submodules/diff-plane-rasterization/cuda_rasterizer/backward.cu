@@ -635,7 +635,7 @@ renderCUDA(
 	const uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
 	const uint32_t pix_id = W * pix.y + pix.x;
 	const float2 pixf = { (float)pix.x, (float)pix.y };
-	const float2 ray = { (pixf.x - W * 0.5f) / fx, (pixf.y - H * 0.5f) / fy };
+	const float2 ray = { (pixf.x - W * 0.5) / fx, (pixf.y - H * 0.5) / fy };
 
 	const bool inside = pix.x < W&& pix.y < H;
 	const uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];

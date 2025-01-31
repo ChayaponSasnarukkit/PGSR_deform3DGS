@@ -46,7 +46,7 @@ def render_normal(viewpoint_cam, depth, offset=None, normal=None, scale=1):
     normal_ref = normal_ref.permute(2,0,1)
     return normal_ref
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, 
+def render(viewpoint_camera, time, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, 
            return_plane =True, return_depth_normal = True):
 
     """
@@ -92,7 +92,10 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     # add deformation to each points
     # deformation = pc.get_deformation
     means3D = pc.get_xyz
-    ori_time = torch.tensor(viewpoint_camera.time).to(means3D.device)
+    if time:
+        ori_time = torch.tensor(time).to(means3D.device)
+    else:
+        ori_time = torch.tensor(viewpoint_camera.time).to(means3D.device)
     means2D = screenspace_points
     means2D_abs = screenspace_points_abs
     opacity = pc._opacity
